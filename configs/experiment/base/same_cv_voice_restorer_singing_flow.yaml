@@ -1,0 +1,50 @@
+# @package _global_
+
+defaults:
+  - /tags: default
+  - override /trainer: default
+  - override /model: voice_restoration_module
+  - override /data: singing_restoration
+  - override /callbacks: default
+  - _self_
+
+tags:
+  model: voice_restorer
+
+seed: 64
+float32_matmul_precision: high
+
+trainer:
+  max_epochs: 300
+
+data:
+  persistent_workers: true
+
+model:
+  net:
+    autoencoder:
+      artifact_path: /home/joe/dev/voice-restoration/same-s-mono-gen-aligned-cv.pt
+    velocity_model:
+      latent_dimension: 256
+      conditioning_dimension: 256
+    timestep_shift_base_dimension: 4096
+  scheduler:
+    _target_: flow_voice_restoration.utils.schedulers.warmup_cosine
+    _partial_: true
+    warmup_steps: 500
+    min_lr_ratio: 0.05
+  audio_reconstruction_criterion:
+    _target_: vae.losses.reconstruction.MultiScaleMelSpectrogramLoss
+    sample_rate: 44100
+  audio_reconstruction_criterion_weight: 0.1
+
+callbacks:
+  learning_rate_monitor:
+    _target_: lightning.pytorch.callbacks.LearningRateMonitor
+    logging_interval: step
+
+loggers:
+  mlflow:
+    tags: ${tags}
+    run_name: ${run_name}
+    experiment_name: ${experiment_name}

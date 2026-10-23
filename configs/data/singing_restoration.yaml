@@ -1,0 +1,7 @@
+defaults:
+  - precomputed_restoration
+  - _self_
+
+dataset_class:
+  data_dir: ${paths.data_dir}/same-gen-aligned-cv-singing-restoration-precomputed
+  strict_validation: false

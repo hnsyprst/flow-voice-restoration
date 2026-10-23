@@ -1,0 +1,4 @@
+# Default tags for mlflow
+
+mlflow.note.content: ${description}
+user: ${local_username:}

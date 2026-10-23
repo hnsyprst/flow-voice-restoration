@@ -1,0 +1,5 @@
+_target_: flow_voice_restoration.data.components.precomputed_restoration_dataset.PrecomputedRestorationDataset
+
+data_dir: ???
+strict_validation: true
+content_feature_suffix: null

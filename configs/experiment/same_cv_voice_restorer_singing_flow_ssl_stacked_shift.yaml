@@ -1,0 +1,18 @@
+# @package _global_
+
+defaults:
+  - base/same_cv_voice_restorer_singing_flow
+  - /model/components/ssl_conditioner@model.net.ssl_conditioner: denoised_w2v_bert
+  - _self_
+
+run_name: same_cv_voice_restorer_singing_flow_ssl_stacked_shift
+description: "As same_voice_restorer_singing_flow_ssl_stacked_shift, but uses `same-s-mono-gen-aligned-cv` instead of `same-s-mono`."
+
+data:
+  batch_size: 16
+
+callbacks:
+  model_checkpoint:
+    dirpath: /opt/dlami/nvme/voice-restoration-ckpts/${run_name}_${now:%Y-%m-%d}_${now:%H-%M-%S}
+  on_exception_checkpoint:
+    dirpath: /opt/dlami/nvme/voice-restoration-ckpts/${run_name}_${now:%Y-%m-%d}_${now:%H-%M-%S}

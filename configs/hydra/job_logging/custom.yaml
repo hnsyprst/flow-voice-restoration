@@ -1,0 +1,22 @@
+version: 1
+formatters:
+  console:
+    (): flow_voice_restoration.utils.rich_logging.RenderableFormatter
+  file:
+    format: "[%(asctime)s][%(levelname)s] - %(message)s"
+handlers:
+  console:
+    class: flow_voice_restoration.utils.rich_logging.RenderableHandler
+    formatter: console
+    markup: true
+    rich_tracebacks: true
+    tracebacks_suppress: ["${hydra_module:}", "${omegaconf_module:}"]  # Suppress outputs from hydra and omegaconf in exceptions
+  file:
+    class: logging.FileHandler
+    filename: "${hydra:runtime.output_dir}/${hydra:job.name}.log"
+    encoding: utf-8
+    formatter: file
+root:
+  handlers: [console, file]
+
+disable_existing_loggers: false

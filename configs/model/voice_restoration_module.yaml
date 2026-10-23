@@ -1,0 +1,21 @@
+defaults:
+  - components/voice_restorer@net
+  - _self_
+
+_target_: flow_voice_restoration.models.voice_restoration_module.VoiceRestorationLightningModule
+
+optimizer:
+  _target_: torch.optim.AdamW
+  _partial_: true
+  lr: 1e-4
+  weight_decay: 1e-2
+  betas: [ 0.9, 0.95 ]
+
+encoder_lr_scale: 0.25
+conditioning_dropout_probability: 0.1
+timestep_mean: 0.0
+timestep_std: 1.0
+num_validation_sampling_steps: 8
+# Set `false` to resume from a checkpoint that predates a parameter this model now has -- an
+# `ssl_conditioner`, say, whose projection starts at zero and so changes nothing at step 0.
+strict_loading: true

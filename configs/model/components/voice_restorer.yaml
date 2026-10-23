@@ -1,0 +1,18 @@
+_target_: flow_voice_restoration.models.components.voice_restoration.VoiceRestorer
+
+autoencoder:
+  _target_: flow_voice_restoration.utils.autoencoder.load_exported_autoencoder
+  artifact_path: ???
+ssl_conditioner: null
+freeze_encoder: false
+velocity_model:
+  _target_: flow_voice_restoration.models.components.modules.dit.DiT
+  latent_dimension: 64
+  conditioning_dimension: 512
+  model_dimension: 768
+  num_heads: 12
+  num_layers: 16
+  feedforward_dimension: 3072
+num_sampling_steps: 32
+guidance_scale: 1.0
+timestep_shift_base_dimension: null

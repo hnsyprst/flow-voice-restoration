@@ -1,0 +1,12 @@
+# @package _global_
+
+defaults:
+  - same_cv_voice_restorer_singing_flow_ssl_stacked_shift_ssl_dropout
+  - override /data: multi_source_ears_restoration
+  - _self_
+
+run_name: same_cv_voice_restorer_singing_flow_ssl_dropout_ears_silent
+description: "As `same_cv_voice_restorer_singing_flow_ssl_stacked_shift_ssl_dropout`, trained on a mix: the same singing tree, plus EARS speech (25% of draws) and noise-only clips with silent targets (5%), each validated separately. The singing source keeps the bare `valid/*` names, so this compares directly with the singing-only run."
+
+trainer:
+  use_distributed_sampler: false

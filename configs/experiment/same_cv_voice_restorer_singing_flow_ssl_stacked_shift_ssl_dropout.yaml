@@ -1,0 +1,19 @@
+# @package _global_
+
+defaults:
+  - base/same_cv_voice_restorer_singing_flow
+  - /model/components/ssl_conditioner@model.net.ssl_conditioner: denoised_w2v_bert
+  - _self_
+
+run_name: same_cv_voice_restorer_singing_flow_ssl_stacked_shift_ssl_dropout
+description: "As `same_cv_voice_restorer_singing_flow_ssl_stacked_shift` (the ContentVec-distilled `same-s-mono-gen-aligned-cv` VAE), at the same 8-GPU, 300-epoch budget, plus an independent 20% dropout of the SSL content stream alone, so the content stream can be guided on its own at inference (SSL-only guidance)."
+
+trainer:
+  devices: 2
+  accumulate_grad_batches: 8
+
+data:
+  batch_size: 8
+
+model:
+  ssl_dropout_probability: 0.2

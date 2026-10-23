@@ -1,0 +1,19 @@
+# @package _global_
+
+defaults:
+  - _self_
+  - data: precomputed_restoration
+  - model: voice_restoration_module
+  - callbacks: default
+  - loggers: default
+  - trainer: default
+  - paths: default
+  - hydra: default
+
+  - experiment: null
+
+  - debug: null
+
+task_name: "train"
+
+experiment_name: "Voice Restoration"

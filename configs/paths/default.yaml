@@ -1,0 +1,8 @@
+# Path configurations. Paths are relative to the project root, which is automatically detected by Hydra
+
+root_dir: ${oc.env:PROJECT_ROOT}
+data_dir: /mnt/data
+log_dir: ${paths.root_dir}/logs/
+tmp_dir: ${paths.data_dir}/tmp
+output_dir: ${hydra:runtime.output_dir}
+work_dir: ${hydra:runtime.cwd}

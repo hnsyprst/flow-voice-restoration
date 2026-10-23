@@ -1,0 +1,6 @@
+_target_: flow_voice_restoration.data.components.precomputed_latents_dataset.PrecomputedLatentsDataset
+
+data_dir: ???
+latent_extension: pt
+audio_extension: wav
+strict_validation: true

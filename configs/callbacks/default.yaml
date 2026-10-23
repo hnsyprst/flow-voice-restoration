@@ -1,0 +1,21 @@
+defaults:
+  - model_checkpoint
+  - logged_rich_model_summary
+  - rich_progress_bar
+  - on_exception_checkpoint
+  - _self_
+
+model_checkpoint:
+  dirpath: ${paths.output_dir}/checkpoints
+  filename: "epoch_{epoch:03d}"
+  monitor: "valid/loss"
+  mode: "min"
+  save_last: True
+  auto_insert_metric_name: False
+
+logged_rich_model_summary:
+  max_depth: 3
+
+on_exception_checkpoint:
+  dirpath: ${paths.output_dir}/checkpoints
+  filename: "EXCEPTION_epoch_{epoch:03d}"

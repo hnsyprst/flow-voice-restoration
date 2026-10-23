@@ -1,0 +1,5 @@
+_target_: flow_voice_restoration.models.components.modules.ssl_conditioning.DenoisedSslConditioner
+checkpoint_path: /home/joe/dev/voice-restoration/w2v-bert-denoised-step-400000.ckpt
+conditioning_dimension: 256
+input_sample_rate: 44100
+num_sub_windows: 5

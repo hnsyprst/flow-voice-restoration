@@ -1,0 +1,16 @@
+defaults:
+  - components/precomputed_restoration_dataset@dataset_class
+  - _self_
+
+_target_: flow_voice_restoration.data.datamodule.DataModule
+
+# `DataModule` instantiates the dataset itself in `setup()`, so pass it as a partial
+dataset_class:
+  _partial_: true
+  data_dir: ${paths.data_dir}/mimi-vae-voice-restoration-precomputed
+
+batch_size: null
+train_val_test_split: [0.9, 0.05, 0.05]
+num_workers: 16
+pin_memory: True
+seed: ${seed}

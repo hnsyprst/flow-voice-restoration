@@ -1,0 +1,8 @@
+mlflow:
+  _target_: lightning.pytorch.loggers.mlflow.MLFlowLogger
+  experiment_name: ???
+  run_name: ???
+  tags: ???
+  prefix: ""
+  artifact_location: null
+  tracking_uri: "${mlflow_tracking_uri:}"

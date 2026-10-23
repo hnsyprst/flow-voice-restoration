@@ -1,0 +1,7 @@
+_target_: src.flow_voice_restoration.data.components.audio_file_dataset.AudioFileDataset
+data_dir: ${paths.data_dir}/voice-enhancer-segments
+supported_file_extensions: ["wav", "flac"]
+audio_duration: 10
+sample_rate: 48000
+num_channels: 1
+strict_validation: false

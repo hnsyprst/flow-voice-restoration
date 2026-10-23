@@ -1,0 +1,33 @@
+defaults:
+  - components/precomputed_restoration_dataset@sources.singing.dataset
+  - components/precomputed_restoration_dataset@sources.speech.dataset
+  - components/precomputed_restoration_dataset@sources.silent.dataset
+  - _self_
+
+_target_: flow_voice_restoration.data.multi_source_datamodule.MultiSourceDataModule
+_convert_: all
+
+sources:
+  singing:
+    fraction: null
+    dataset:
+      _partial_: true
+      data_dir: ${paths.data_dir}/same-gen-aligned-cv-singing-restoration-precomputed
+      strict_validation: false
+  speech:
+    fraction: 0.25
+    dataset:
+      _partial_: true
+      data_dir: /mnt/data2/same-gen-aligned-cv-speech-ears-restoration-precomputed
+  silent:
+    fraction: 0.05
+    dataset:
+      _partial_: true
+      data_dir: ${paths.data_dir}/same-gen-aligned-cv-silent-target-restoration-precomputed
+
+batch_size: null
+train_val_test_split: [0.9, 0.05, 0.05]
+num_workers: 16
+pin_memory: True
+seed: ${seed}
+samples_per_epoch: null
