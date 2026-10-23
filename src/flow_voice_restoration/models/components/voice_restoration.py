@@ -118,6 +118,7 @@ class VoiceRestorer(nn.Module):
         downsampling_ratio = same.patch_size * math.prod(
             cast(int, block.stride) for block in same.encoder.transformer_layers
         )
+        self.sample_rate = autoencoder.sample_rate
         self.encoder_frame_rate = autoencoder.sample_rate / downsampling_ratio
 
         self.freeze_encoder = freeze_encoder
