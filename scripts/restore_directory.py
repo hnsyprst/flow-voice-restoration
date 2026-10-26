@@ -1,5 +1,6 @@
 import argparse
 import math
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
@@ -10,8 +11,10 @@ import torch
 from hydra import compose, initialize_config_dir
 from hydra.utils import instantiate
 from omegaconf import DictConfig
+from rich.console import Console
 
 from flow_voice_restoration.models.components.voice_restoration import VoiceRestorer
+from flow_voice_restoration.utils.rich_logging import TensorProgress
 
 CONFIG_DIR = rootutils.find_root(__file__, indicator=".project-root") / "configs"
 
@@ -101,6 +104,28 @@ def build_crossfade_weights(
     return weights
 
 
+def count_windows(
+    num_samples: int,
+    window: int,
+    overlap: int,
+) -> int:
+    """
+    Count the windows `restore` cuts audio into.
+
+    :param num_samples: Length of the audio in samples.
+    :type num_samples: int
+    :param window: Window length in samples.
+    :type window: int
+    :param overlap: Overlap between consecutive windows in samples.
+    :type overlap: int
+
+    :returns: Number of windows.
+    :rtype: int
+    """
+
+    return max(1, math.ceil((num_samples - overlap) / (window - overlap)))
+
+
 def restore(
     net: VoiceRestorer,
     audio: torch.Tensor,
@@ -109,6 +134,7 @@ def restore(
     batch_size: int,
     device: str,
     sampling_kwargs: dict,
+    callback: Callable[[int, dict], None] | None = None,
 ) -> torch.Tensor:
     """
     Restore mono audio of any length by overlap-adding fixed-length windows.
@@ -127,6 +153,9 @@ def restore(
     :type device: str
     :param sampling_kwargs: Passed to `restore_audio` (sampling steps, guidance and temperature).
     :type sampling_kwargs: dict
+    :param callback: Called after every Euler step with the index of the batch of windows being
+        restored and the sampler's step dict (see `VoiceRestorer.sample`).
+    :type callback: Callable[[int, dict], None] | None
 
     :returns: Restored audio with shape [num_samples].
     :rtype: torch.Tensor
@@ -134,15 +163,16 @@ def restore(
 
     num_samples = audio.shape[-1]
     hop = window - overlap
-    num_windows = max(1, math.ceil((num_samples - overlap) / hop))
+    num_windows = count_windows(num_samples, window, overlap)
     padded = torch.nn.functional.pad(audio, (0, (num_windows - 1) * hop + window - num_samples))
     windows = padded.unfold(0, window, hop)
 
     output = torch.zeros_like(padded)
-    for start in range(0, num_windows, batch_size):
+    for batch_index, start in enumerate(range(0, num_windows, batch_size)):
         batch = windows[start : start + batch_size].unsqueeze(1).to(device)
+        step_callback = None if callback is None else lambda d, b=batch_index: callback(b, d)
         with torch.inference_mode():
-            restored = net.restore_audio(batch, **sampling_kwargs)
+            restored = net.restore_audio(batch, **sampling_kwargs, callback=step_callback)
         restored = restored.squeeze(1).float().cpu()
         for offset, chunk in enumerate(restored):
             index = start + offset
@@ -231,23 +261,30 @@ def main() -> None:
         default=None,
         help="Seed the sampler, per file, for a reproducible render",
     )
+    parser.add_argument(
+        "--no-animation",
+        action="store_true",
+        help="Don't animate the sampler (it is never animated outside a terminal)",
+    )
     args = parser.parse_args()
+    console = Console()
+    animate = not args.no_animation and console.is_terminal
 
-    print(f"Experiment: {args.experiment}")
-    print(f"Checkpoint: {args.checkpoint}")
+    console.print(f"Experiment: {args.experiment}")
+    console.print(f"Checkpoint: {args.checkpoint}")
 
     net, epoch, global_step = load_net(load_config(args.experiment), args.checkpoint)
     net = net.to(args.device).eval()
     sample_rate = net.sample_rate
     frame_hop = round(sample_rate / net.encoder_frame_rate)
-    print(f"  epoch {epoch}, global step {global_step}, {sample_rate} Hz, on {args.device}")
+    console.print(f"  epoch {epoch}, global step {global_step}, {sample_rate} Hz, on {args.device}")
 
     # Snap both lengths to the frame hop, so every window starts on the latent grid
     window = max(1, round(args.window * sample_rate / frame_hop)) * frame_hop
     overlap = round(args.overlap * sample_rate / frame_hop) * frame_hop
     if 2 * overlap > window:
         raise SystemExit(f"--overlap ({args.overlap} s) must be at most half of --window ({args.window} s).")
-    print(f"  windows of {window / sample_rate:.2f} s, overlapping by {overlap / sample_rate:.2f} s")
+    console.print(f"  windows of {window / sample_rate:.2f} s, overlapping by {overlap / sample_rate:.2f} s")
 
     steps = args.num_sampling_steps or net.num_sampling_steps
     guidance = args.guidance_scale if args.guidance_scale is not None else net.guidance_scale
@@ -265,12 +302,12 @@ def main() -> None:
         "guidance_target": args.guidance_target,
     }
     target = " (SSL stream only)" if args.guidance_target == "ssl" else ""
-    print(f"  {steps} Euler steps, CFG scale {guidance}{target}, Gaussian temperature {args.temperature}")
+    console.print(f"  {steps} Euler steps, CFG scale {guidance}{target}, Gaussian temperature {args.temperature}")
 
     paths = sorted(p for p in args.input.rglob("*") if p.is_file() and p.suffix.lower() in AUDIO_EXTENSIONS)
     if not paths:
         raise SystemExit(f"No audio files ({', '.join(sorted(AUDIO_EXTENSIONS))}) under {args.input}.")
-    print(f"Restoring {len(paths)} file(s) to {args.output}")
+    console.print(f"Restoring {len(paths)} file(s) to {args.output}")
 
     for path in paths:
         audio, file_sample_rate = soundfile.read(path, dtype="float32", always_2d=True)
@@ -279,20 +316,42 @@ def main() -> None:
             audio = soxr.resample(audio, file_sample_rate, sample_rate)
         peak = np.abs(audio).max()
         if peak < 1e-4:
-            print(f"  {path.relative_to(args.input)}: (near-)silent, skipped")
+            console.print(f"  {path.relative_to(args.input)}: (near-)silent, skipped")
             continue
         audio = torch.from_numpy(audio / peak * INPUT_PEAK).float()
 
         if args.seed is not None:
             torch.manual_seed(args.seed)
-        restored = restore(net, audio, window, overlap, args.batch_size, args.device, sampling_kwargs)
+        if animate:
+            num_batches = math.ceil(count_windows(audio.shape[-1], window, overlap) / args.batch_size)
+            with TensorProgress(
+                num_batches * steps,
+                ramp="blocks",
+                color="viridis",
+                title=str(path.relative_to(args.input)),
+                console=console,
+                transient=True,
+                height=20,
+            ) as view:
+                restored = restore(
+                    net,
+                    audio,
+                    window,
+                    overlap,
+                    args.batch_size,
+                    args.device,
+                    sampling_kwargs,
+                    callback=lambda b, d: view.update(d["denoised"].transpose(1, 2), b * steps + d["i"], d["t"]),
+                )
+        else:
+            restored = restore(net, audio, window, overlap, args.batch_size, args.device, sampling_kwargs)
 
         destination = (args.output / path.relative_to(args.input)).with_suffix(".wav")
         destination.parent.mkdir(parents=True, exist_ok=True)
         soundfile.write(destination, restored.clamp(-1.0, 1.0).numpy(), sample_rate, subtype="PCM_24")
-        print(f"  {path.relative_to(args.input)}: {audio.shape[-1] / sample_rate:.1f}s")
+        console.print(f"  {path.relative_to(args.input)}: {audio.shape[-1] / sample_rate:.1f}s")
 
-    print("Done.")
+    console.print("Done.")
 
 
 if __name__ == "__main__":

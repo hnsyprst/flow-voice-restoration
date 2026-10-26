@@ -1,4 +1,5 @@
 import math
+from collections.abc import Callable
 from typing import Literal, Self, cast
 
 import torch
@@ -252,6 +253,7 @@ class VoiceRestorer(nn.Module):
         ssl_conditioning: torch.Tensor | None = None,
         temperature: float = 1.0,
         guidance_target: Literal["all", "ssl"] = "all",
+        callback: Callable[[dict], None] | None = None,
     ) -> torch.Tensor:
         """
         Sample clean standardized latents by Euler-integrating the learned velocity field
@@ -283,6 +285,10 @@ class VoiceRestorer(nn.Module):
             the guidance pushes along the content direction alone (see this class's docstring). Not
             combinable with `guide`, whose weak branch is a different model.
         :type guidance_target: Literal["all", "ssl"]
+        :param callback: Called after every Euler step with a dict holding the step's index `i`, the
+            flow time `t` it reached, the latents `x` there, and `denoised`, the clean-latent estimate
+            `x + (1 - t) * velocity`. All latents have shape [B, T, latent_dimension].
+        :type callback: Callable[[dict], None] | None
 
         :returns: Sampled latents with shape [B, T, latent_dimension].
         :rtype: torch.Tensor
@@ -332,6 +338,10 @@ class VoiceRestorer(nn.Module):
                 velocity = weak_velocity + guidance_scale * (velocity - weak_velocity)
             x = x + velocity * dt
 
+            if callback is not None:
+                t_next = timesteps[step + 1]
+                callback({"i": step, "t": t_next, "x": x, "denoised": x + (1.0 - t_next) * velocity})
+
         return x
 
     @torch.inference_mode()
@@ -342,6 +352,7 @@ class VoiceRestorer(nn.Module):
         guidance_scale: float | None = None,
         temperature: float = 1.0,
         guidance_target: Literal["all", "ssl"] = "all",
+        callback: Callable[[dict], None] | None = None,
     ) -> torch.Tensor:
         """
         Restore degraded audio.
@@ -357,6 +368,8 @@ class VoiceRestorer(nn.Module):
         :type temperature: float
         :param guidance_target: What CFG takes away for its weak branch, `all` or `ssl`; see `integrate`.
         :type guidance_target: Literal["all", "ssl"]
+        :param callback: Called after every Euler step; see `sample`.
+        :type callback: Callable[[dict], None] | None
 
         :returns: Restored audio with shape [B, 1, num_samples].
         :rtype: torch.Tensor
@@ -372,5 +385,6 @@ class VoiceRestorer(nn.Module):
             ssl_conditioning,
             temperature,
             guidance_target=guidance_target,
+            callback=callback,
         )
         return self.decode(latents)[..., :num_samples]
