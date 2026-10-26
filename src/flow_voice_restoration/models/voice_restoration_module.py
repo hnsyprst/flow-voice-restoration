@@ -17,12 +17,38 @@ def source_metric_names(
     source: str,
     is_reference: bool,
 ) -> dict[str, torch.Tensor]:
+    """
+    Add the dataset source name to a dictionary of validation metrics.
+
+    :param metrics: Dictionary of validation metrics.
+    :type metrics: dict[str, torch.Tensor]
+    :param source: Dataset source name.
+    :type source: str
+    :param is_reference: If `True`, don't append the dataset source name.
+    :type is_reference: bool
+
+    :returns: Dictionary of validation metrics, with source name added to the keys.
+    :rtype: dict[str, torch.Tensor]
+    """
+
     if is_reference:
         return metrics
     return {f"valid/{source}/{name.removeprefix('valid/')}": value for name, value in metrics.items()}
 
 
-def sum_loss_terms(loss: dict[str, torch.Tensor] | torch.Tensor) -> torch.Tensor:
+def sum_loss_terms(
+    loss: dict[str, torch.Tensor] | torch.Tensor,
+) -> torch.Tensor:
+    """
+    Sum loss terms.
+
+    :param loss: Dictionary of loss terms, or a tensor containing a single loss term.
+    :type loss: dict[str, torch.Tensor] | torch.Tensor
+
+    :returns: Summed loss, as a tensor.
+    :rtype: torch.Tensor
+    """
+
     if isinstance(loss, torch.Tensor):
         return loss
     if not loss:
@@ -43,24 +69,6 @@ class OptimizerProtocol(Protocol):
 class VoiceRestorationLightningModule(LightningModule):
     """
     Lightning module for the flow-matching voice restoration model.
-
-    Trains the `DiT` velocity model (and the conditioning encoder) with the rectified-flow
-    objective: for t ~ logit-normal, x_t = (1 - t) * x_0 + t * x_1 with x_0 ~ N(0, I) and
-    x_1 the clean standardized latents, regress the velocity (x_1 - x_0) conditioned on
-    degraded-audio features. Conditioning is dropped for a fraction of samples to enable
-    classifier-free guidance at inference. With an SSL conditioner, `ssl_dropout_probability` also
-    drops the SSL stream alone for a further fraction, which is what SSL-only guidance
-    (`VoiceRestorer.sample`'s `guidance_target="ssl"`) needs.
-
-    An optional `content_distillation_criterion` adds a second training term, on the conditioning
-    encoder alone: its features of the *degraded* audio are pushed to predict an SSL teacher's
-    features of the *clean* audio, i.e. the content the degradation buried (see `DistillationLoss`).
-    It reads the encoder's features from before conditioning dropout, since dropout is about what the
-    velocity model may see and the encoder ran on every sample regardless. Nothing but the encoder is
-    upstream of it, so the velocity model never sees its gradient.
-
-    Expects batches of `(noisy_audio, clean_audio, clean_latents)`, optionally followed by
-    the clean audio's SSL content features (see `PrecomputedRestorationDataset`).
     """
 
     def __init__(
@@ -80,6 +88,39 @@ class VoiceRestorationLightningModule(LightningModule):
         num_validation_sampling_steps: int = 8,
         strict_loading: bool = True,
     ):
+        """
+        Initialise the lightning module.
+
+        :param net: The flow-matching voice restoration model to train.
+        :type net: VoiceRestorer
+        :param optimizer: The optimizer class to use for training.
+        :type optimizer: OptimizerProtocol
+        :param scheduler: The learning rate scheduler class to use for training, or `None` to disable scheduling.
+        :type scheduler: Callable[..., LRScheduler] | None
+        :param encoder_lr_scale: Scale factor for the learning rate of the encoder parameters.
+        :type encoder_lr_scale: float
+        :param conditioning_dropout_probability: Probability of dropping the conditioning during training,
+            to enable classifier-free guidance at inference.
+        :type conditioning_dropout_probability: float
+        :param ssl_dropout_probability: Probability of dropping the SSL conditioning during training,
+            to enable classifier-free guidance at inference.
+        :type ssl_dropout_probability: float
+        :param timestep_mean: Mean of the Gaussian distribution used to sample timesteps for flow matching.
+        :type timestep_mean: float
+        :param timestep_std: Standard deviation of the Gaussian distribution used to sample timesteps for flow matching.
+        :type timestep_std: float
+        :param audio_reconstruction_criterion: Criterion for audio reconstruction loss, or `None` to disable it.
+        :type audio_reconstruction_criterion: torch.nn.Module | None
+        :param audio_reconstruction_criterion_weight: Weight of the audio reconstruction loss in the total loss.
+        :type audio_reconstruction_criterion_weight: float
+        :param content_distillation_criterion: Criterion for content distillation loss, or `None` to disable it.
+        :type content_distillation_criterion: DistillationLoss | None
+        :param num_validation_sampling_steps: Number of Euler steps to take when computing metrics during validation.
+        :type num_validation_sampling_steps: int
+        :param strict_loading: Enables or disables strict loading of checkpoints.
+        :type strict_loading: bool
+        """
+
         super().__init__()
         self.save_hyperparameters(
             ignore=[
@@ -153,14 +194,12 @@ class VoiceRestorationLightningModule(LightningModule):
             model_encoder_conditioning = torch.where(
                 dropout_mask, torch.zeros_like(encoder_conditioning), encoder_conditioning
             )
-            # The same samples lose both streams: dropping one and keeping the other would teach the
+            # The same samples lose both streams. Dropping one and keeping the other would teach the
             # unconditional branch to lean on whichever survived, and classifier-free guidance would
-            # then be extrapolating along the wrong axis.
+            # then be extrapolating along the wrong axis
             if ssl_conditioning is not None:
                 model_ssl_conditioning = torch.where(dropout_mask, torch.zeros_like(ssl_conditioning), ssl_conditioning)
         if drop_conditioning and self.ssl_dropout_probability > 0.0 and model_ssl_conditioning is not None:
-            # Independent of the mask above, and deliberately the opposite of what it avoids: here
-            # the encoder's features survive, which is the weak branch SSL-only guidance needs.
             ssl_dropout_mask = (
                 torch.rand(batch_size, 1, 1, device=encoder_conditioning.device) < self.ssl_dropout_probability
             )

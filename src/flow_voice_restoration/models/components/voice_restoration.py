@@ -13,58 +13,7 @@ from flow_voice_restoration.utils.autoencoder import ExportedAutoencoder
 
 class VoiceRestorer(nn.Module):
     """
-    Flow-matching voice restoration model.
-
-    A trainable conditioning encoder (warm-started from the frozen stage 1 VAE's encoder) extracts
-    features from degraded audio; a `DiT` velocity model then transports Gaussian noise to the
-    clean standardized bottleneck latents, conditioned on those features. The frozen VAE bottleneck
-    and decoder render the result. Unlike the regression predictor, sampling picks a plausible
-    clean latent instead of averaging over all of them, so it does not over-smooth under ambiguity.
-
-    An optional `ssl_conditioner` adds a second view of the degraded audio to that conditioning: the
-    denoised w2v-BERT features of `DenoisedSslConditioner`, which describe linguistic content rather
-    than signal. Heavy distortion is where the waveform encoder loses the words while keeping pitch,
-    timbre and prosody, and where a content-bearing feature stream has something to add. Leave it
-    `None` for the model exactly as it was before this existed, parameter for parameter.
-
-    `ssl_conditioning_mode` decides how that second view reaches the velocity model:
-
-      - `add`: pooled to the latent frame rate, projected to the conditioning width and summed into
-        the encoder's features, so the velocity model sees one stream. The projection is
-        zero-initialised, which is what lets a checkpoint from before the conditioner existed load
-        into a model with one.
-      - `separate`: handed to the velocity model as its own stream, at the student's 50 Hz and full
-        width, for a `DiT` built with an `ssl_conditioning_dimension`. Nothing is pooled or squeezed,
-        and the two streams are no longer superimposed -- summing them constrains the velocity
-        model's view of the SSL features to a rank-`conditioning_dimension` map of the encoder's own
-        projection, where two streams let it read each on its own terms.
-
-    `timestep_shift_base_dimension` turns on RAE's dimension-dependent schedule shift (Zheng et al.,
-    "Diffusion Transformers with Representation Autoencoders", §3.2, after Esser et al. 2024). The
-    more numbers a sample holds, the less the same noise level corrupts it, so flow time is shifted
-    towards noise by alpha = sqrt(m / n), where m is the effective data dimension -- frames times
-    latent channels -- and n the base dimension (4096 in both papers). See `shift_timesteps`. Both
-    training (via the Lightning module) and sampling go through it, so a model trained shifted is
-    sampled shifted. `None` leaves flow time as it always was.
-
-    Sampling can be guided in one of two ways. Classifier-free guidance extrapolates away from the
-    velocity model's own unconditional prediction (zeroed conditioning). Autoguidance (Karras et al.,
-    "Guiding a Diffusion Model with a Bad Version of Itself", 2024) instead extrapolates away from a
-    `guide`: a weaker model -- smaller, or less trained, such as an earlier checkpoint of the same run
-    -- trained on the same task and conditioned on the same input. The paper's argument is that the
-    difference between the two isolates the errors the weaker model makes more of, so extrapolating
-    away from it corrects those without the loss of variation CFG's conditional/unconditional
-    mismatch brings. The velocity is affine in the denoiser output at fixed x and t, so guiding
-    velocities is the same as guiding denoisers.
-
-    CFG can also take away the SSL stream alone (`guidance_target="ssl"`), extrapolating from the
-    encoder-only prediction towards the full one: v = v(enc) + w * (v(enc + ssl) - v(enc)). That
-    pushes along the content direction only, not timbre, noise and room as well. It needs a model
-    trained with the SSL stream dropped on its own (the Lightning module's `ssl_dropout_probability`);
-    without that, the encoder-only branch is a condition the model has never seen.
-
-    The stage 1 model is a SAME autoencoder (see `load_exported_autoencoder`). Its
-    decoder rounds the output length up past the input's; trim to the input length where it matters.
+    Flow-matching voice restoration model using a Diffusion Transformer.
     """
 
     def __init__(
@@ -80,9 +29,9 @@ class VoiceRestorer(nn.Module):
         """
         Initialize FlowVoiceRestorer.
 
-        :param autoencoder: Autoencoder used to decode predicted latents, with its sample rate (see
-            `load_exported_autoencoder`). Its encoder is also used to warm-start the (optionally
-            trainable) conditioning encoder. The bottleneck and decoder are frozen during training.
+        :param autoencoder: Autoencoder used to decode predicted latents.
+            Its encoder is also used to warm-start the (optionally trainable) conditioning encoder.
+            The bottleneck and decoder are frozen during training.
         :type autoencoder: ExportedAutoencoder
         :param velocity_model: DiT predicting flow-matching velocities.
         :type velocity_model: DiT
@@ -97,9 +46,11 @@ class VoiceRestorer(nn.Module):
         :param guidance_scale: Default classifier-free guidance scale.
             1.0 disables guidance; larger values increase guidance strength.
         :type guidance_scale: float
-        :param timestep_shift_base_dimension: Base dimension n of the dimension-dependent timestep shift,
-            set to 4096 by default in the RAE recipe. `None` disables the shift.
+        :param timestep_shift_base_dimension: Base dimension of the dimension-dependent timestep shift,
+            set to 4096 by default in the RAE [1] recipe. `None` disables the shift.
         :type timestep_shift_base_dimension: int | None
+
+        .. [1] https://arxiv.org/abs/2510.11690
         """
 
         super().__init__()
@@ -188,7 +139,16 @@ class VoiceRestorer(nn.Module):
         ssl_conditioning: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """
-        placeholder
+        Predict the flow-matching velocities for a batch of noisy latents.
+
+        :param noisy_latents: Noisy standardized bottleneck latents with shape [B, T, latent_dimension].
+        :type noisy_latents: torch.Tensor
+        :param timestep: Flow times in [0, 1] with shape [B].
+        :type timestep: torch.Tensor
+        :param encoder_conditioning: The encoder's conditioning features with shape [B, T, conditioning_dimension].
+        :type encoder_conditioning: torch.Tensor
+        :param ssl_conditioning: The SSL conditioning features with shape [B, S, ssl_feature_width], or `None`.
+        :type ssl_conditioning: torch.Tensor | None
         """
 
         conditioning = encoder_conditioning + ssl_conditioning if ssl_conditioning is not None else encoder_conditioning
@@ -221,20 +181,18 @@ class VoiceRestorer(nn.Module):
         num_frames: int,
     ) -> torch.Tensor:
         """
-        Apply the dimension-dependent timestep shift, or return `timestep` unchanged if it is off.
-
-        RAE states the shift with time running the other way (t=1 is noise): s' = alpha * s /
-        (1 + (alpha - 1) * s). Here t=0 is noise, so s = 1 - t, which gives t' = t / (1 + (alpha - 1)
-        * (1 - t)). Both ends stay fixed, and with alpha > 1 everything in between moves towards noise.
+        Apply the dimension-dependent timestep shift from RAE [1], or return `timestep` unchanged if it is off.
 
         :param timestep: Flow times in [0, 1], any shape.
         :type timestep: torch.Tensor
-        :param num_frames: Latent frames per sample. Times the latent dimension, this is the effective
-            data dimension m in alpha = sqrt(m / n).
+        :param num_frames: Latent frames per sample.
+            Times the latent dimension, this is the effective data dimension m in alpha = sqrt(m / n).
         :type num_frames: int
 
         :returns: Shifted flow times, same shape as `timestep`.
         :rtype: torch.Tensor
+
+        .. [1] https://arxiv.org/abs/2510.11690
         """
 
         if self.timestep_shift_base_dimension is None:
@@ -256,42 +214,36 @@ class VoiceRestorer(nn.Module):
         callback: Callable[[dict], None] | None = None,
     ) -> torch.Tensor:
         """
-        Sample clean standardized latents by Euler-integrating the learned velocity field
+        Sample clean standardized latents by Euler-integrating the learned velocity field,
         from Gaussian noise (t=0) to data (t=1).
 
-        Every step stays on the autograd graph, so a loss on the result reaches the velocity model
-        through all `num_sampling_steps` of it. That graph costs one velocity-model activation set
-        per step; prefer `sample` unless you specifically need the gradients.
+        Features a temperature parameter proposed in CALM [1], which can be used to trade
+        diversity for fidelity, analogously to the temperature parameter in autoregressive models.
 
-        :param encoder_conditioning: The encoder's conditioning features with shape
-            [B, T, conditioning_dimension].
+        :param encoder_conditioning: The encoder's conditioning features with shape [B, T, conditioning_dimension].
         :type encoder_conditioning: torch.Tensor
         :param num_sampling_steps: Number of Euler steps. Defaults to `self.num_sampling_steps`.
         :type num_sampling_steps: int | None
-        :param guidance_scale: Guidance scale -- CFG's, or autoguidance's when `guide` is given. 1.0
-            disables either. Defaults to `self.guidance_scale`.
+        :param guidance_scale: Guidance scale, defaults to `self.guidance_scale`.
         :type guidance_scale: float | None
-        :param ssl_conditioning: The SSL stream with shape [B, T, conditioning_dimension], summed into
-            `encoder_conditioning` by `forward`, or `None` for a model without an `ssl_conditioner`.
-            Plain CFG drops it alongside the encoder's conditioning, so the unconditional branch is
-            genuinely unconditional rather than still holding the content.
+        :param ssl_conditioning: The SSL stream with shape [B, T, conditioning_dimension],
+            summed into `encoder_conditioning` by `forward`, or `None` for a model without an `ssl_conditioner`.
         :type ssl_conditioning: torch.Tensor | None
-        :param temperature: Gaussian temperature (Rouard et al. 2026, CALM): the initial noise is
-            drawn with variance `temperature`, i.e. standard deviation `sqrt(temperature)`, trading
-            diversity for fidelity below 1.0. 1.0 is plain sampling.
+        :param temperature: Temperature control from CALM [1].
+            The initial noise is drawn with variance `temperature`, i.e. standard deviation `sqrt(temperature)`,
+            trading diversity for fidelity below 1.0. 1.0 is plain sampling.
         :type temperature: float
-        :param guidance_target: What CFG takes away for its weak branch. `all` zeroes every stream, as
-            CFG always has. `ssl` keeps the encoder's features and takes away only the SSL stream, so
-            the guidance pushes along the content direction alone (see this class's docstring). Not
-            combinable with `guide`, whose weak branch is a different model.
+        :param guidance_target: What to take away for the weak branch of classifier-free guidance (CFG).
+            `all` zeroes every stream, obtaining the unconditional velocity.
+            `ssl` keeps the encoder's features and takes away only the SSL stream.
         :type guidance_target: Literal["all", "ssl"]
-        :param callback: Called after every Euler step with a dict holding the step's index `i`, the
-            flow time `t` it reached, the latents `x` there, and `denoised`, the clean-latent estimate
-            `x + (1 - t) * velocity`. All latents have shape [B, T, latent_dimension].
+        :param callback: Called after every Euler step with a dict holding information about the step.
         :type callback: Callable[[dict], None] | None
 
         :returns: Sampled latents with shape [B, T, latent_dimension].
         :rtype: torch.Tensor
+
+        .. [1] https://arxiv.org/abs/2509.06926
         """
 
         num_sampling_steps = num_sampling_steps or self.num_sampling_steps
@@ -302,8 +254,6 @@ class VoiceRestorer(nn.Module):
         if guidance_target == "ssl" and guidance_scale != 1.0 and ssl_conditioning is None:
             raise ValueError("SSL-only guidance needs `ssl_conditioning`; none was given.")
 
-        # The noise is drawn in the dtype of the summed conditioning `forward` hands the velocity
-        # model, which is what it was drawn in when the streams were summed before sampling.
         dtype = (
             encoder_conditioning.dtype
             if ssl_conditioning is None
@@ -361,18 +311,23 @@ class VoiceRestorer(nn.Module):
         :type noisy_audio: torch.Tensor
         :param num_sampling_steps: Number of Euler steps. Defaults to `self.num_sampling_steps`.
         :type num_sampling_steps: int | None
-        :param guidance_scale: Guidance scale -- CFG's, or autoguidance's when `guide` is given.
-            Defaults to `self.guidance_scale`.
+        :param guidance_scale: Guidance scale, defaults to `self.guidance_scale`.
         :type guidance_scale: float | None
-        :param temperature: Gaussian temperature of the initial noise; see `integrate`.
+        :param temperature: Temperature control from CALM [1].
+            The initial noise is drawn with variance `temperature`, i.e. standard deviation `sqrt(temperature)`,
+            trading diversity for fidelity below 1.0. 1.0 is plain sampling.
         :type temperature: float
-        :param guidance_target: What CFG takes away for its weak branch, `all` or `ssl`; see `integrate`.
+        :param guidance_target: What to take away for the weak branch of classifier-free guidance (CFG).
+            `all` zeroes every stream, obtaining the unconditional velocity.
+            `ssl` keeps the encoder's features and takes away only the SSL stream.
         :type guidance_target: Literal["all", "ssl"]
-        :param callback: Called after every Euler step; see `sample`.
+        :param callback: Euler step with a dict holding information about the step.
         :type callback: Callable[[dict], None] | None
 
         :returns: Restored audio with shape [B, 1, num_samples].
         :rtype: torch.Tensor
+
+        .. [1] https://arxiv.org/abs/2509.06926
         """
 
         _batch_size, _num_channels, num_samples = noisy_audio.shape
