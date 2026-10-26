@@ -1,0 +1,14 @@
+# @package _global_
+
+defaults:
+  - same_cv_voice_restorer_singing_flow_ssl_dropout_ears_silent
+  - override /data: multi_source_ears_swa_restoration
+  - _self_
+
+run_name: same_cv_swa_voice_restorer_singing_flow_ssl_dropout_ears_silent
+description: "As `same_cv_voice_restorer_singing_flow_ssl_dropout_ears_silent`, but uses `same-s-mono-gen-aligned-cv-swa` (sliding-window attention) instead of `same-s-mono-gen-aligned-cv`, with latents precomputed by it."
+
+model:
+  net:
+    autoencoder:
+      artifact_path: /home/joe/dev/voice-restoration/same-s-mono-gen-aligned-cv-swa.pt

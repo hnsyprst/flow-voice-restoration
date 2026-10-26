@@ -1,0 +1,14 @@
+defaults:
+  - multi_source_ears_restoration
+  - _self_
+
+sources:
+  singing:
+    dataset:
+      data_dir: ${paths.data_dir}/same-gen-aligned-cv-swa-singing-restoration-precomputed
+  speech:
+    dataset:
+      data_dir: /mnt/data2/same-gen-aligned-cv-swa-speech-ears-restoration-precomputed
+  silent:
+    dataset:
+      data_dir: ${paths.data_dir}/same-gen-aligned-cv-swa-silent-target-restoration-precomputed

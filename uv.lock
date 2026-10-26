@@ -2595,7 +2595,7 @@ wheels = [
 [[package]]
 name = "vae"
 version = "0.1.0"
-source = { git = "https://github.com/hnsyprst/vae?rev=add-same#96e71767bc0c4fa6c475c76d3110efcf1e7c5fc8" }
+source = { git = "https://github.com/hnsyprst/vae?rev=add-same#ffd9283a5af9c4c1641d65f32133dd9f492528c0" }
 dependencies = [
     { name = "einops", marker = "sys_platform == 'linux'" },
     { name = "hydra-core", marker = "sys_platform == 'linux'" },
