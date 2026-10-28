@@ -64,6 +64,11 @@ def main(cfg: DictConfig):
     datamodule: LightningDataModule = hydra.utils.instantiate(cfg.data)
     model: LightningModule = hydra.utils.instantiate(cfg.model)
 
+    if init_ckpt_path := cfg.get("init_ckpt_path"):
+        log.info(f"Initialising weights from {init_ckpt_path}.")
+        checkpoint = torch.load(init_ckpt_path, map_location="cpu", weights_only=False)
+        model.load_state_dict(checkpoint["state_dict"], strict=model.strict_loading)
+
     # Instantiate callbacks
     callbacks: list[Callback] = []
     if cfg.callbacks is not None:

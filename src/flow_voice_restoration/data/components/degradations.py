@@ -1,5 +1,6 @@
 # Ported from Sidon: https://github.com/sarulab-speech/Sidon/blob/main/src/sidon/data/preprocess/functional_degrations.py
 
+import math
 import random
 from collections.abc import Iterator, Sequence
 from itertools import chain
@@ -7,6 +8,7 @@ from pathlib import Path
 
 import numpy as np
 import pyroomacoustics as pra
+import scipy.signal
 import torch
 import torchaudio
 from torchcodec.decoders import AudioDecoder
@@ -159,6 +161,75 @@ def band_limit(
     up_sampled = torchaudio.functional.resample(down_sampled, target_sr, sr)
     # Resampling can change the length by a sample; pad/crop back to keep the pair aligned
     return torch.nn.functional.pad(up_sampled, (0, max(0, x.size(1) - up_sampled.size(1))))[:, : x.size(1)]
+
+
+def bandstop(
+    x: torch.Tensor,
+    sr: int,
+    rng: random.Random,
+    highpass_prob: float = 0.3,
+    highpass_cutoff_range: tuple[float, float] = (80.0, 500.0),
+    low_edge_range: tuple[float, float] = (80.0, 8000.0),
+    width_octaves_range: tuple[float, float] = (1 / 3, 2.0),
+    butterworth_prob: float = 0.5,
+    butterworth_orders: Sequence[int] = (2, 4, 8),
+    n_fft: int = 2048,
+    hop_length: int = 512,
+) -> torch.Tensor:
+    """
+    Remove a random frequency band, either ideally (zeroing its STFT bins) or with a Butterworth filter.
+    With probability `highpass_prob` the band starts at 0 Hz, making this a high-pass.
+
+    :param x: Audio tensor of shape `(channels, samples)` (mono).
+    :type x: torch.Tensor
+    :param sr: Sample rate of `x` in Hz.
+    :type sr: int
+    :param rng: Random number generator to draw the band and filter from.
+    :type rng: random.Random
+    :param highpass_prob: Probability the band starts at 0 Hz.
+    :type highpass_prob: float
+    :param highpass_cutoff_range: Range the high-pass cutoff is drawn from (log-uniformly), in Hz.
+    :type highpass_cutoff_range: Tuple[float, float]
+    :param low_edge_range: Range a band's lower edge is drawn from (log-uniformly), in Hz.
+    :type low_edge_range: Tuple[float, float]
+    :param width_octaves_range: Range a band's width is drawn from, in octaves.
+    :type width_octaves_range: Tuple[float, float]
+    :param butterworth_prob: Probability of a Butterworth filter rather than the ideal STFT mask.
+    :type butterworth_prob: float
+    :param butterworth_orders: Butterworth filter orders to choose from.
+    :type butterworth_orders: Sequence[int]
+    :param n_fft: STFT size of the ideal mask.
+    :type n_fft: int
+    :param hop_length: STFT hop of the ideal mask.
+    :type hop_length: int
+    :return: `x` with the band removed, peak-limited to 0.99, shape `(1, samples)`.
+    :rtype: torch.Tensor
+    """
+
+    x = x.view(1, -1)
+    if rng.random() < highpass_prob:
+        low, high = 0.0, math.exp(rng.uniform(*map(math.log, highpass_cutoff_range)))
+    else:
+        low = math.exp(rng.uniform(*map(math.log, low_edge_range)))
+        high = min(low * 2 ** rng.uniform(*width_octaves_range), 0.99 * sr / 2)
+
+    if rng.random() < butterworth_prob:
+        order = rng.choice(list(butterworth_orders))
+        if low == 0.0:
+            sos = scipy.signal.butter(order, high, btype="highpass", fs=sr, output="sos")
+        else:
+            sos = scipy.signal.butter(order, (low, high), btype="bandstop", fs=sr, output="sos")
+        filtered = torch.from_numpy(scipy.signal.sosfilt(sos, x.numpy()).astype(np.float32))
+    else:
+        window = torch.hann_window(n_fft)
+        spectrum = torch.stft(x, n_fft, hop_length, window=window, return_complex=True)
+        frequencies = torch.fft.rfftfreq(n_fft, 1 / sr)
+        spectrum[:, (frequencies >= low) & (frequencies <= high)] = 0
+        filtered = torch.istft(spectrum, n_fft, hop_length, window=window, length=x.size(1))
+
+    filtered = torch.nan_to_num(filtered)
+    peak = filtered.abs().max()
+    return filtered * (0.99 / peak) if peak > 0.99 else filtered
 
 
 @torch.inference_mode()
