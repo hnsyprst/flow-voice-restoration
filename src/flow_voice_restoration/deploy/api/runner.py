@@ -48,8 +48,8 @@ class VoiceRestorerRunner(TorchBaseRunner):
         overlap_seconds: float = 2.0,
         batch_size: int = 4,
         input_peak: float = 0.9,
-        preview_rows: int = 20,
-        preview_columns: int = 100,
+        preview_rows: int = 256,
+        preview_columns: int = 256,
         preview_queue: Queue | None = None,
     ):
         """

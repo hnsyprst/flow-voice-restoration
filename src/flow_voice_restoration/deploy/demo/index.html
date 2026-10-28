@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Voice Restoration</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500&display=swap"
+    />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <canvas id="background" aria-hidden="true"></canvas>
+
+    <main class="stage">
+      <section class="panel" aria-label="Voice restoration demo">
+        <div class="panel-glass" id="glass">
+          <div class="panel-body" id="dropzone">
+            <p class="label">Voice restoration</p>
+
+            <div class="idle" id="idle">
+              <button type="button" class="pill pill-white" id="record">
+                <span class="dot" aria-hidden="true"></span>
+                <span>Record</span>
+                <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+                  <rect x="9" y="3" width="6" height="11" rx="3" fill="currentColor" />
+                  <path d="M5 11a7 7 0 0 0 14 0M12 18v3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+                </svg>
+              </button>
+              <p class="or">or</p>
+              <button type="button" class="link" id="upload">Upload audio</button>
+              <p class="hint">or drop a file here · 1 s to 5 min</p>
+            </div>
+
+            <div class="recording" id="recording" hidden>
+              <span class="recording-dot" aria-hidden="true"></span>
+              <span class="mono" id="recording-time">0:00</span>
+              <button type="button" class="pill pill-white" id="stop">Stop</button>
+            </div>
+
+            <p class="error" id="error" role="alert" hidden></p>
+          </div>
+
+          <div class="row" id="original-row" hidden>
+            <button type="button" class="play" aria-label="Play original">
+              <svg class="icon-play" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M8 5.5v13l11-6.5z" /></svg>
+              <svg class="icon-pause" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z" /></svg>
+            </button>
+            <div class="track">
+              <span class="track-label">Original</span>
+              <canvas class="wave"></canvas>
+            </div>
+            <span class="time">0:00</span>
+            <button type="button" class="pill pill-white" id="enhance">Enhance</button>
+          </div>
+
+          <div class="row" id="enhanced-row" hidden>
+            <button type="button" class="play" aria-label="Play enhanced" disabled>
+              <svg class="icon-play" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M8 5.5v13l11-6.5z" /></svg>
+              <svg class="icon-pause" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z" /></svg>
+            </button>
+            <div class="track">
+              <span class="track-label">Enhanced</span>
+              <div class="progress" id="progress"><div class="progress-fill" id="progress-fill"></div></div>
+              <canvas class="wave" hidden></canvas>
+            </div>
+            <span class="time">Queued</span>
+            <a class="pill pill-outline" id="download" hidden>Save</a>
+          </div>
+        </div>
+        <div class="panel-border" aria-hidden="true"></div>
+      </section>
+    </main>
+
+    <input type="file" id="file" accept="audio/*" hidden />
+    <script src="background.js"></script>
+    <script src="panel.js"></script>
+  </body>
+</html>

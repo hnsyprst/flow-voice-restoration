@@ -5,9 +5,10 @@ from uuid import uuid4
 
 import torch
 from fastapi import BackgroundTasks, File, Form, UploadFile
+from fastapi.staticfiles import StaticFiles
 from lauryn.base import BaseAPI
 from lauryn.formatters import AUDIO_FORMATTER_44KHZ_MONO
-from lauryn.structs import AUDIO_FORMAT
+from lauryn.structs import API_RESPONSE_TYPE, AUDIO_FORMAT
 from lauryn.validators import AUDIO_VALIDATOR_44KHZ_MONO_5MIN
 
 from flow_voice_restoration.deploy.api.previews import PreviewBroadcaster
@@ -69,6 +70,11 @@ if __name__ == "__main__":
         action="store_true",
         help="Stream sampler previews over the /preview/{preview_id} WebSocket",
     )
+    parser.add_argument(
+        "--demo",
+        action="store_true",
+        help="Serve the demo site at /demo",
+    )
     args = parser.parse_args()
 
     broadcaster = PreviewBroadcaster() if args.previews else None
@@ -111,13 +117,18 @@ if __name__ == "__main__":
             "audio_format": out_format,
         }
         if broadcaster is None:
-            return await app.process({"audio": file}, params, background_tasks)
+            return await app.process({"audio": file}, params, background_tasks, API_RESPONSE_TYPE.file)
 
         preview_id = str(uuid4())
-        task = await app.process({"audio": file}, {**params, "preview_id": preview_id}, background_tasks)
+        task = await app.process(
+            {"audio": file}, {**params, "preview_id": preview_id}, background_tasks, API_RESPONSE_TYPE.file
+        )
         return {**task.model_dump(by_alias=True, mode="json"), "previewId": preview_id}
 
     if broadcaster is not None:
         app.include_router(broadcaster.router)
+
+    if args.demo:
+        app.mount("/demo", StaticFiles(directory=Path(__file__).parent.parent / "demo", html=True))
 
     uvicorn.run(app, host=args.host, port=args.port)
