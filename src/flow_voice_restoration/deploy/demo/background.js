@@ -72,7 +72,7 @@ class AsciiBackground {
   // Characters from quietest to loudest: `RAMPS["classic"]` in `utils/rich_logging.py`
   static RAMP = " .:-=+*#%@";
   // Barely-visible grey for the noise, and the accent blue for the preview, as [r, g, b, min alpha, max alpha]
-  static NOISE_COLOR = [242, 242, 242, 0.035, 0.11];
+  static NOISE_COLOR = [242, 242, 242, 0.05, 0.15];
   static PREVIEW_COLOR = [28, 160, 255, 0.35, 0.75];
 
   constructor(canvas, { fps = 12, transitionFps = 30, fontSize = 13, lineHeight = 16, speed = 0.00006 } = {}) {

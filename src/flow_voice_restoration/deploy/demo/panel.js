@@ -28,6 +28,10 @@ const progressBar = document.getElementById("progress");
 const progressFill = document.getElementById("progress-fill");
 const downloadLink = document.getElementById("download");
 
+// Liquid glass refraction in Chromium; a frosted blur elsewhere
+const liquidOptions = { scale: -170, chroma: 1.5, border: 0.02, mapBlur: 12, blur: 1, saturate: 1 };
+let liquid = liquidGlass(glass, liquidOptions);
+
 let audioContext = null;
 let input = null;
 let busy = false;
@@ -209,8 +213,24 @@ function animateHeight(element, change) {
   const from = element.getBoundingClientRect().height;
   change();
   const to = element.getBoundingClientRect().height;
+  liquid.refresh();
   if (reducedMotion.matches || from === to) return;
-  element.animate([{ height: `${from}px` }, { height: `${to}px` }], { duration: 450, easing: EASE_OUT });
+  const animation = element.animate([{ height: `${from}px` }, { height: `${to}px` }], { duration: 450, easing: EASE_OUT });
+
+  // The glass's displacement map covers its old size, so redraw it every frame while it grows or shrinks
+  let animating = true;
+  const stop = () => {
+    animating = false;
+    liquid.refresh();
+  };
+  animation.addEventListener("finish", stop);
+  animation.addEventListener("cancel", stop);
+  const refresh = () => {
+    if (!animating) return;
+    liquid.refresh();
+    requestAnimationFrame(refresh);
+  };
+  refresh();
 }
 
 /**
