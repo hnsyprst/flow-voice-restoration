@@ -29,6 +29,12 @@ dependencies = [
     "vae",
 ]
 
+[project.optional-dependencies]
+api = [
+    "lauryn",
+    "websockets>=17.3",
+]
+
 [dependency-groups]
 dev = [
     "ipykernel>=7.3.0",
@@ -78,3 +84,4 @@ override-dependencies = [
 [tool.uv.sources]
 flash-attn = { url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.0/flash_attn-2.8.3%2Bcu128torch2.10-cp312-cp312-linux_x86_64.whl" }
 vae = { git = "https://github.com/hnsyprst/vae", rev = "add-same" }
+lauryn = { git = "https://github.com/bandlab/bandlab-ml-lauryn", rev = "7eb87f6e6f75a1820218d37d252cb5e883c73e8e" }
