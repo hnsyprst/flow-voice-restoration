@@ -48,6 +48,7 @@ class VoiceRestorerRunner(TorchBaseRunner):
         overlap_seconds: float = 2.0,
         batch_size: int = 4,
         input_peak: float = 0.9,
+        max_output_peak: float = 0.99,
         preview_rows: int = 256,
         preview_columns: int = 256,
         preview_queue: Queue | None = None,
@@ -68,6 +69,8 @@ class VoiceRestorerRunner(TorchBaseRunner):
         :type batch_size: int
         :param input_peak: The peak inputs are normalised to during training.
         :type input_peak: float
+        :param max_output_peak: Restored audio peaking above this is scaled down to it, so it never clips.
+        :type max_output_peak: float
         :param preview_rows: Most rows a preview's grid holds.
         :type preview_rows: int
         :param preview_columns: Most columns a preview's grid holds.
@@ -91,6 +94,7 @@ class VoiceRestorerRunner(TorchBaseRunner):
             raise ValueError(f"Overlap ({overlap_seconds} s) must be at most half of the window ({window_seconds} s).")
         self.batch_size = batch_size
         self.input_peak = input_peak
+        self.max_output_peak = max_output_peak
         self.preview_rows = preview_rows
         self.preview_columns = preview_columns
         self.preview_queue = preview_queue
@@ -187,4 +191,7 @@ class VoiceRestorerRunner(TorchBaseRunner):
             },
             callback=callback,
         )
-        return {"audio_out": restored.clamp(-1.0, 1.0).unsqueeze(0)}
+        peak = restored.abs().max()
+        if peak > self.max_output_peak:
+            restored = restored * (self.max_output_peak / peak)
+        return {"audio_out": restored.unsqueeze(0)}
