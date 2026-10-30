@@ -106,8 +106,10 @@ def restore(
     num_samples = audio.shape[-1]
     hop = window - overlap
     num_windows = count_windows(num_samples, window, overlap)
-    padded = torch.nn.functional.pad(audio, (0, (num_windows - 1) * hop + window - num_samples))
-    windows = padded.unfold(0, window, hop)
+    padded = torch.nn.functional.pad(audio, (0, max(0, window - num_samples)))
+    # The last window is pulled back to end at the audio's end, so it sees as much content as possible.
+    starts = [index * hop for index in range(num_windows - 1)] + [max(0, num_samples - window)]
+    windows = torch.stack([padded[start : start + window] for start in starts])
 
     output = torch.zeros_like(padded)
     for batch_index, start in enumerate(range(0, num_windows, batch_size)):
@@ -119,6 +121,9 @@ def restore(
         for offset, chunk in enumerate(restored):
             index = start + offset
             weights = build_crossfade_weights(window, overlap, fade_in=index > 0, fade_out=index < num_windows - 1)
-            output[index * hop : index * hop + window] += chunk * weights
+            # Discard the pulled-back last window's output before where it would have started.
+            discard = index * hop - starts[index]
+            weights = torch.nn.functional.pad(weights, (discard, 0))[:window]
+            output[starts[index] : starts[index] + window] += chunk * weights
 
     return output[:num_samples]
