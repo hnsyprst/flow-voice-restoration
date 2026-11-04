@@ -1,5 +1,6 @@
 import logging
 import math
+import random
 from collections.abc import Callable, Iterator, Mapping, Sequence
 
 import torch
@@ -125,6 +126,50 @@ class MultiSourceSampler(Sampler[int]):
         return self.num_samples_per_replica
 
 
+class DegradedDataset(Dataset):
+    """
+    Apply a random degradation to the noisy audio (the first element) of another dataset's items.
+    """
+
+    def __init__(
+        self,
+        dataset: Subset,
+        degradation: Callable[..., torch.Tensor],
+        prob: float,
+    ):
+        """
+        Initialise the dataset.
+
+        :param dataset: Dataset whose items start with noisy audio.
+        :type dataset: Subset
+        :param degradation: Called as `degradation(noisy_audio, rng=rng)`, returning the degraded audio.
+        :type degradation: Callable[..., torch.Tensor]
+        :param prob: Probability of degrading each item.
+        :type prob: float
+        """
+
+        super().__init__()
+        self.dataset = dataset
+        self.degradation = degradation
+        self.prob = prob
+        # Seeded on first use, so each worker draws from its own seed
+        self.rng: random.Random | None = None
+
+    def __len__(self) -> int:
+        return len(self.dataset)
+
+    def __getitem__(
+        self,
+        index: int,
+    ) -> tuple[torch.Tensor, ...]:
+        if self.rng is None:
+            self.rng = random.Random(torch.initial_seed())
+        noisy_audio, *rest = self.dataset[index]
+        if self.rng.random() < self.prob:
+            noisy_audio = self.degradation(noisy_audio, rng=self.rng)
+        return noisy_audio, *rest
+
+
 class MultiSourceDataModule(LightningDataModule):
     """
     Train on several datasets at once, each at a configured share of every epoch, and validate on each
@@ -145,6 +190,8 @@ class MultiSourceDataModule(LightningDataModule):
         persistent_workers: bool = False,
         seed: int = 64,
         samples_per_epoch: int | None = None,
+        train_degradation: Callable[..., torch.Tensor] | None = None,
+        train_degradation_prob: float = 0.5,
     ):
         """
         Initialise the datamodule.
@@ -169,6 +216,11 @@ class MultiSourceDataModule(LightningDataModule):
             the reference source's training split, so an epoch, and every schedule counted in them,
             means what it did when that source was trained on alone.
         :type samples_per_epoch: int | None
+        :param train_degradation: Degradation applied on the fly to training items' noisy audio (see
+            `DegradedDataset`). Validation and test items are left as they are.
+        :type train_degradation: Callable[..., torch.Tensor] | None
+        :param train_degradation_prob: Probability of applying `train_degradation` to each training item.
+        :type train_degradation_prob: float
         """
 
         super().__init__()
@@ -187,8 +239,10 @@ class MultiSourceDataModule(LightningDataModule):
         self.persistent_workers = persistent_workers and num_workers > 0
         self.seed = seed
         self.samples_per_epoch = samples_per_epoch
+        self.train_degradation = train_degradation
+        self.train_degradation_prob = train_degradation_prob
         # These will be set in setup, one entry per source
-        self.data_train: list[Subset] | None = None
+        self.data_train: list[Subset] | list[DegradedDataset] | None = None
         self.data_valid: list[Subset] | None = None
         self.data_test: list[Subset] | None = None
 
@@ -211,6 +265,11 @@ class MultiSourceDataModule(LightningDataModule):
             for factory in self.dataset_factories
         ]
         self.data_train, self.data_valid, self.data_test = (list(split) for split in zip(*splits, strict=True))
+        if self.train_degradation is not None:
+            self.data_train = [
+                DegradedDataset(dataset, self.train_degradation, self.train_degradation_prob)
+                for dataset in self.data_train
+            ]
         for name, fraction, train, valid, test in zip(
             self.source_names, self.fractions, self.data_train, self.data_valid, self.data_test, strict=True
         ):
@@ -220,7 +279,7 @@ class MultiSourceDataModule(LightningDataModule):
             )
 
     @staticmethod
-    def _require_setup(datasets: list[Subset] | None) -> list[Subset]:
+    def _require_setup[T](datasets: list[T] | None) -> list[T]:
         if datasets is None:
             raise ValueError("The datamodule has not been set up. Ensure `setup` is called first.")
         return datasets

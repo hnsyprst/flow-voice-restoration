@@ -1,0 +1,19 @@
+# @package _global_
+
+defaults:
+  - same_cv_swa_voice_restorer_singing_flow_ssl_dropout_ears_silent
+  - _self_
+
+run_name: same_cv_swa_voice_restorer_singing_flow_ssl_dropout_ears_silent_bandstop_scratch
+description: "As `same_cv_swa_voice_restorer_singing_flow_ssl_dropout_ears_silent`, trained from scratch with a random bandstop (ideal STFT mask or Butterworth, sometimes a high-pass) applied on the fly to half the training inputs."
+
+data:
+  train_degradation:
+    _target_: flow_voice_restoration.data.components.degradations.bandstop
+    _partial_: true
+    sr: 44100
+  train_degradation_prob: 0.5
+
+callbacks:
+  model_checkpoint:
+    save_top_k: 1

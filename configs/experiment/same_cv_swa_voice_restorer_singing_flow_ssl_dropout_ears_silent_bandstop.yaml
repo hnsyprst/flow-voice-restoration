@@ -1,0 +1,26 @@
+# @package _global_
+
+defaults:
+  - same_cv_swa_voice_restorer_singing_flow_ssl_dropout_ears_silent
+  - _self_
+
+run_name: same_cv_swa_voice_restorer_singing_flow_ssl_dropout_ears_silent_bandstop
+description: "Fine-tunes `same_cv_swa_voice_restorer_singing_flow_ssl_dropout_ears_silent` with a random bandstop (ideal STFT mask or Butterworth, sometimes a high-pass) applied on the fly to half the training inputs."
+
+init_ckpt_path: ${paths.log_dir}/train/runs/same_cv_swa_voice_restorer_singing_flow_ssl_dropout_ears_silent_2026-10-25_12-15-50/checkpoints/last.ckpt
+
+trainer:
+  max_epochs: 60
+
+data:
+  train_degradation:
+    _target_: flow_voice_restoration.data.components.degradations.bandstop
+    _partial_: true
+    sr: 44100
+  train_degradation_prob: 0.5
+
+model:
+  optimizer:
+    lr: 5e-5
+  scheduler:
+    warmup_steps: 200

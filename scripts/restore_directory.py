@@ -1,189 +1,160 @@
 import argparse
 import math
-from collections.abc import Callable
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
-import rootutils
 import soundfile
 import soxr
 import torch
-from hydra import compose, initialize_config_dir
-from hydra.utils import instantiate
-from omegaconf import DictConfig
 from rich.console import Console
 
-from flow_voice_restoration.models.components.voice_restoration import VoiceRestorer
+from flow_voice_restoration.inference.restoration import count_windows, restore
+from flow_voice_restoration.inference.utils import load_config, load_net
 from flow_voice_restoration.utils.rich_logging import TensorProgress
-
-CONFIG_DIR = rootutils.find_root(__file__, indicator=".project-root") / "configs"
 
 AUDIO_EXTENSIONS = {".wav", ".flac", ".ogg", ".mp3", ".aif", ".aiff"}
 
-#: The peak the training clips were normalised to (`degradations.normalize`)
-INPUT_PEAK = 0.9
 
-
-def load_config(
+def main(
     experiment: str,
-) -> DictConfig:
-    """
-    Compose an experiment's config as `train.py experiment=<experiment>` would.
-
-    :param experiment: Experiment config name.
-    :type experiment: str
-
-    :returns: The composed config.
-    :rtype: DictConfig
-    """
-
-    with initialize_config_dir(config_dir=str(CONFIG_DIR), version_base="1.3"):
-        return compose(config_name="default", overrides=[f"experiment={experiment}"])
-
-
-def load_net(
-    config: DictConfig,
-    checkpoint_path: Path,
-) -> tuple[VoiceRestorer, int | None, int | None]:
-    """
-    Instantiate the voice restorer from an experiment's config and load a checkpoint's weights into it.
-
-    :param config: The experiment's composed config.
-    :type config: DictConfig
-    :param checkpoint_path: Lightning checkpoint holding the `net.*` weights.
-    :type checkpoint_path: Path
-
-    :returns: The restorer, and the checkpoint's epoch and global step.
-    :rtype: tuple[VoiceRestorer, int | None, int | None]
-    """
-
-    net = instantiate(config.model.net)
-
-    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
-    state_dict = {}
-    for key, value in checkpoint["state_dict"].items():
-        for prefix in ("net._orig_mod.", "net."):
-            if key.startswith(prefix):
-                state_dict[key[len(prefix) :]] = value
-                break
-
-    net.load_state_dict(state_dict, strict=True)
-    return net, checkpoint.get("epoch"), checkpoint.get("global_step")
-
-
-def build_crossfade_weights(
-    window: int,
-    overlap: int,
-    fade_in: bool,
-    fade_out: bool,
-) -> torch.Tensor:
-    """
-    Build crossfading weights for overlap-add.
-
-    :param window: Window length in samples.
-    :type window: int
-    :param overlap: Overlap between consecutive windows in samples.
-    :type overlap: int
-    :param fade_in: Whether the window's start is overlapped by the previous one.
-    :type fade_in: bool
-    :param fade_out: Whether the window's end is overlapped by the next one.
-    :type fade_out: bool
-
-    :returns: Weights with shape [window].
-    :rtype: torch.Tensor
-    """
-
-    weights = torch.ones(window)
-    if overlap == 0:
-        return weights
-    ramp = torch.sin(0.5 * math.pi * (torch.arange(overlap) + 0.5) / overlap) ** 2
-    if fade_in:
-        weights[:overlap] = ramp
-    if fade_out:
-        weights[-overlap:] = ramp.flip(0)
-    return weights
-
-
-def count_windows(
-    num_samples: int,
-    window: int,
-    overlap: int,
-) -> int:
-    """
-    Count the windows `restore` cuts audio into.
-
-    :param num_samples: Length of the audio in samples.
-    :type num_samples: int
-    :param window: Window length in samples.
-    :type window: int
-    :param overlap: Overlap between consecutive windows in samples.
-    :type overlap: int
-
-    :returns: Number of windows.
-    :rtype: int
-    """
-
-    return max(1, math.ceil((num_samples - overlap) / (window - overlap)))
-
-
-def restore(
-    net: VoiceRestorer,
-    audio: torch.Tensor,
-    window: int,
-    overlap: int,
+    checkpoint: Path,
+    input: Path,
+    output: Path,
+    window_seconds: float,
+    overlap_seconds: float,
     batch_size: int,
     device: str,
-    sampling_kwargs: dict,
-    callback: Callable[[int, dict], None] | None = None,
-) -> torch.Tensor:
+    num_sampling_steps: int | None,
+    guidance_scale: float | None,
+    guidance_target: Literal["all", "ssl"],
+    temperature: float,
+    seed: int | None,
+    no_animation: bool,
+):
     """
-    Restore mono audio of any length by overlap-adding fixed-length windows.
+    Restore every audio file under a directory.
 
-    :param net: The restorer.
-    :type net: VoiceRestorer
-    :param audio: Audio with shape [num_samples], at the model's sample rate.
-    :type audio: torch.Tensor
-    :param window: Window length in samples.
-    :type window: int
-    :param overlap: Overlap between consecutive windows in samples.
-    :type overlap: int
+    :param experiment: Experiment config the checkpoint was trained with.
+    :type experiment: str
+    :param checkpoint: Checkpoint to restore with.
+    :type checkpoint: Path
+    :param input: Directory of audio files, searched recursively.
+    :type input: Path
+    :param output: Directory to write the restored wavs to.
+    :type output: Path
+    :param window_seconds: Window length in seconds, snapped to the encoder's frame hop.
+    :type window_seconds: float
+    :param overlap_seconds: Overlap between windows in seconds, snapped to the encoder's frame hop.
+        At most half of `window_seconds`.
+    :type overlap_seconds: float
     :param batch_size: How many windows to restore per forward pass.
     :type batch_size: int
     :param device: Device to run the model on.
     :type device: str
-    :param sampling_kwargs: Passed to `restore_audio` (sampling steps, guidance and temperature).
-    :type sampling_kwargs: dict
-    :param callback: Called after every Euler step with the index of the batch of windows being
-        restored and the sampler's step dict (see `VoiceRestorer.sample`).
-    :type callback: Callable[[int, dict], None] | None
-
-    :returns: Restored audio with shape [num_samples].
-    :rtype: torch.Tensor
+    :param num_sampling_steps: Euler steps, or None for the net's own.
+    :type num_sampling_steps: int | None
+    :param guidance_scale: CFG scale, or None for the net's own.
+    :type guidance_scale: float | None
+    :param guidance_target: What CFG drops for its weak branch: all conditioning,
+        or the SSL content stream alone (for models trained with `ssl_dropout_probability`).
+    :type guidance_target: Literal["all", "ssl"]
+    :param temperature: Gaussian temperature, the initial noise's variance.
+    :type temperature: float
+    :param seed: Seed for the sampler, set per file, or None to leave it unseeded.
+    :type seed: int | None
+    :param no_animation: Don't animate the sampler.
+    :type no_animation: bool
     """
 
-    num_samples = audio.shape[-1]
-    hop = window - overlap
-    num_windows = count_windows(num_samples, window, overlap)
-    padded = torch.nn.functional.pad(audio, (0, (num_windows - 1) * hop + window - num_samples))
-    windows = padded.unfold(0, window, hop)
+    console = Console()
+    animate = not no_animation and console.is_terminal
 
-    output = torch.zeros_like(padded)
-    for batch_index, start in enumerate(range(0, num_windows, batch_size)):
-        batch = windows[start : start + batch_size].unsqueeze(1).to(device)
-        step_callback = None if callback is None else lambda d, b=batch_index: callback(b, d)
-        with torch.inference_mode():
-            restored = net.restore_audio(batch, **sampling_kwargs, callback=step_callback)
-        restored = restored.squeeze(1).float().cpu()
-        for offset, chunk in enumerate(restored):
-            index = start + offset
-            weights = build_crossfade_weights(window, overlap, fade_in=index > 0, fade_out=index < num_windows - 1)
-            output[index * hop : index * hop + window] += chunk * weights
+    console.print(f"Experiment: {experiment}")
+    console.print(f"Checkpoint: {checkpoint}")
 
-    return output[:num_samples]
+    net = load_net(load_config(experiment), checkpoint)
+    net = net.to(device).eval()
+    sample_rate = net.sample_rate
+    frame_hop = round(sample_rate / net.encoder_frame_rate)
+    console.print(f"  {sample_rate} Hz, on {device}")
+
+    # Snap both lengths to the frame hop, so every window starts on the latent grid
+    window = max(1, round(window_seconds * sample_rate / frame_hop)) * frame_hop
+    overlap = round(overlap_seconds * sample_rate / frame_hop) * frame_hop
+    if 2 * overlap > window:
+        raise SystemExit(f"--overlap ({overlap_seconds} s) must be at most half of --window ({window_seconds} s).")
+    console.print(f"  windows of {window / sample_rate:.2f} s, overlapping by {overlap / sample_rate:.2f} s")
+
+    steps = num_sampling_steps or net.num_sampling_steps
+    guidance = guidance_scale if guidance_scale is not None else net.guidance_scale
+    if temperature <= 0.0:
+        raise SystemExit(f"--temperature must be positive, got {temperature}.")
+    if guidance_target == "ssl":
+        if net.ssl_conditioner is None:
+            raise SystemExit("--guidance-target ssl needs a model with an SSL conditioner.")
+        if guidance == 1.0:
+            raise SystemExit("--guidance-target ssl does nothing at a guidance scale of 1.0; pass --guidance-scale.")
+    sampling_kwargs = {
+        "num_sampling_steps": steps,
+        "guidance_scale": guidance,
+        "temperature": temperature,
+        "guidance_target": guidance_target,
+    }
+    target = " (SSL stream only)" if guidance_target == "ssl" else ""
+    console.print(f"  {steps} Euler steps, CFG scale {guidance}{target}, Gaussian temperature {temperature}")
+
+    paths = sorted(p for p in input.rglob("*") if p.is_file() and p.suffix.lower() in AUDIO_EXTENSIONS)
+    if not paths:
+        raise SystemExit(f"No audio files ({', '.join(sorted(AUDIO_EXTENSIONS))}) under {input}.")
+    console.print(f"Restoring {len(paths)} file(s) to {output}")
+
+    for path in paths:
+        audio, file_sample_rate = soundfile.read(path, dtype="float32", always_2d=True)
+        audio = audio.mean(axis=1)
+        if file_sample_rate != sample_rate:
+            audio = soxr.resample(audio, file_sample_rate, sample_rate)
+        if np.abs(audio).max() < 1e-4:
+            console.print(f"  {path.relative_to(input)}: (near-)silent, skipped")
+            continue
+        audio = torch.from_numpy(audio).float()
+
+        if seed is not None:
+            torch.manual_seed(seed)
+        if animate:
+            num_batches = math.ceil(count_windows(audio.shape[-1], window, overlap) / batch_size)
+            with TensorProgress(
+                num_batches * steps,
+                ramp="blocks",
+                color="viridis",
+                title=str(path.relative_to(input)),
+                console=console,
+                transient=True,
+                height=20,
+            ) as view:
+                restored = restore(
+                    net,
+                    audio,
+                    window,
+                    overlap,
+                    batch_size,
+                    device,
+                    sampling_kwargs,
+                    callback=lambda b, d: view.update(d["denoised"].transpose(1, 2), b * steps + d["i"], d["t"]),
+                )
+        else:
+            restored = restore(net, audio, window, overlap, batch_size, device, sampling_kwargs)
+
+        destination = (output / path.relative_to(input)).with_suffix(".wav")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        soundfile.write(destination, restored.clamp(-1.0, 1.0).numpy(), sample_rate, subtype="PCM_24")
+        console.print(f"  {path.relative_to(input)}: {audio.shape[-1] / sample_rate:.1f}s")
+
+    console.print("Done.")
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
     parser.add_argument(
         "--experiment",
         required=True,
@@ -267,92 +238,20 @@ def main() -> None:
         help="Don't animate the sampler (it is never animated outside a terminal)",
     )
     args = parser.parse_args()
-    console = Console()
-    animate = not args.no_animation and console.is_terminal
 
-    console.print(f"Experiment: {args.experiment}")
-    console.print(f"Checkpoint: {args.checkpoint}")
-
-    net, epoch, global_step = load_net(load_config(args.experiment), args.checkpoint)
-    net = net.to(args.device).eval()
-    sample_rate = net.sample_rate
-    frame_hop = round(sample_rate / net.encoder_frame_rate)
-    console.print(f"  epoch {epoch}, global step {global_step}, {sample_rate} Hz, on {args.device}")
-
-    # Snap both lengths to the frame hop, so every window starts on the latent grid
-    window = max(1, round(args.window * sample_rate / frame_hop)) * frame_hop
-    overlap = round(args.overlap * sample_rate / frame_hop) * frame_hop
-    if 2 * overlap > window:
-        raise SystemExit(f"--overlap ({args.overlap} s) must be at most half of --window ({args.window} s).")
-    console.print(f"  windows of {window / sample_rate:.2f} s, overlapping by {overlap / sample_rate:.2f} s")
-
-    steps = args.num_sampling_steps or net.num_sampling_steps
-    guidance = args.guidance_scale if args.guidance_scale is not None else net.guidance_scale
-    if args.temperature <= 0.0:
-        raise SystemExit(f"--temperature must be positive, got {args.temperature}.")
-    if args.guidance_target == "ssl":
-        if net.ssl_conditioner is None:
-            raise SystemExit("--guidance-target ssl needs a model with an SSL conditioner.")
-        if guidance == 1.0:
-            raise SystemExit("--guidance-target ssl does nothing at a guidance scale of 1.0; pass --guidance-scale.")
-    sampling_kwargs = {
-        "num_sampling_steps": steps,
-        "guidance_scale": guidance,
-        "temperature": args.temperature,
-        "guidance_target": args.guidance_target,
-    }
-    target = " (SSL stream only)" if args.guidance_target == "ssl" else ""
-    console.print(f"  {steps} Euler steps, CFG scale {guidance}{target}, Gaussian temperature {args.temperature}")
-
-    paths = sorted(p for p in args.input.rglob("*") if p.is_file() and p.suffix.lower() in AUDIO_EXTENSIONS)
-    if not paths:
-        raise SystemExit(f"No audio files ({', '.join(sorted(AUDIO_EXTENSIONS))}) under {args.input}.")
-    console.print(f"Restoring {len(paths)} file(s) to {args.output}")
-
-    for path in paths:
-        audio, file_sample_rate = soundfile.read(path, dtype="float32", always_2d=True)
-        audio = audio.mean(axis=1)
-        if file_sample_rate != sample_rate:
-            audio = soxr.resample(audio, file_sample_rate, sample_rate)
-        peak = np.abs(audio).max()
-        if peak < 1e-4:
-            console.print(f"  {path.relative_to(args.input)}: (near-)silent, skipped")
-            continue
-        audio = torch.from_numpy(audio / peak * INPUT_PEAK).float()
-
-        if args.seed is not None:
-            torch.manual_seed(args.seed)
-        if animate:
-            num_batches = math.ceil(count_windows(audio.shape[-1], window, overlap) / args.batch_size)
-            with TensorProgress(
-                num_batches * steps,
-                ramp="blocks",
-                color="viridis",
-                title=str(path.relative_to(args.input)),
-                console=console,
-                transient=True,
-                height=20,
-            ) as view:
-                restored = restore(
-                    net,
-                    audio,
-                    window,
-                    overlap,
-                    args.batch_size,
-                    args.device,
-                    sampling_kwargs,
-                    callback=lambda b, d: view.update(d["denoised"].transpose(1, 2), b * steps + d["i"], d["t"]),
-                )
-        else:
-            restored = restore(net, audio, window, overlap, args.batch_size, args.device, sampling_kwargs)
-
-        destination = (args.output / path.relative_to(args.input)).with_suffix(".wav")
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        soundfile.write(destination, restored.clamp(-1.0, 1.0).numpy(), sample_rate, subtype="PCM_24")
-        console.print(f"  {path.relative_to(args.input)}: {audio.shape[-1] / sample_rate:.1f}s")
-
-    console.print("Done.")
-
-
-if __name__ == "__main__":
-    main()
+    main(
+        args.experiment,
+        args.checkpoint,
+        args.input,
+        args.output,
+        args.window,
+        args.overlap,
+        args.batch_size,
+        args.device,
+        args.num_sampling_steps,
+        args.guidance_scale,
+        args.guidance_target,
+        args.temperature,
+        args.seed,
+        args.no_animation,
+    )

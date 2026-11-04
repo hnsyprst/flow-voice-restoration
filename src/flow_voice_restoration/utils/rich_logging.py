@@ -172,8 +172,8 @@ class TensorProgress:
         a, b = stops[i], stops[i + 1]
         return tuple(int(round(a[k] + (b[k] - a[k]) * (f - i))) for k in range(3))
 
-    def _to_grid(
-        self,
+    @staticmethod
+    def to_grid(
         z: torch.Tensor,
         width: int,
         rows: int,
@@ -212,7 +212,7 @@ class TensorProgress:
         """
         Draw a grid as ramp characters, one per cell.
 
-        :param grid: Intensities in [0, 1], from `_to_grid()`.
+        :param grid: Intensities in [0, 1], from `to_grid()`.
         :type grid: torch.Tensor
         :param ramp: Ramp characters, ordered from quietest to loudest.
         :type ramp: str
@@ -276,7 +276,7 @@ class TensorProgress:
             return
         self.drawn_at = now
 
-        self.body = self._render(self._to_grid(z, self.width, self.height), self.ramp, self.styles)
+        self.body = self._render(self.to_grid(z, self.width, self.height), self.ramp, self.styles)
         shape = f"{z.shape[1]}ch × {z.shape[2]}"
         flow_time = "" if t is None else f"t={float(torch.as_tensor(t).reshape(-1)[0]):.3f}  "
         self.subtitle = f"[dim]{flow_time}{shape}[/]"
